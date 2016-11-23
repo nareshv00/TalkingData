@@ -42,7 +42,7 @@ timestamp: when the user is using an app with TalkingData SDK
 app_labels.csv - apps and their labels, the label_id's can be used to join with label_categories
 label_categories.csv - apps' labels and their categories in text
 phone_brand_device_model.csv - device ids, brand, and models
-![Database schema.](../Data/TalkingData.png)
+![Database schema.](https://github.com/nareshv00/Talkingdata/blob/master/TalkingData.PNG)
 ------------------------------------------
 
 #Descriptive and Exploratory data analysis 
