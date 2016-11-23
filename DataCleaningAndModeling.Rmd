@@ -1,0 +1,280 @@
+---
+title: "Modeling and Data Cleaning"
+author: "NareshVemula"
+date: "September 5, 2016"
+output: html_document
+---
+
+#Data Merging, Cleaning, Feature Engineering and Modeling
+
+#Agenda
+
+Get to know millions of mobile device users
+
+
+Nothing is more comforting than being greeted by your favorite drink just as you walk through the door of the corner café. While a thoughtful barista knows you take a macchiato every Wednesday morning at 8:15, it’s much more difficult in a digital space for your preferred brands to personalize your experience.
+
+TalkingData, China’s largest third-party mobile data platform, understands that everyday choices and behaviors paint a picture of who we are and what we value. Currently, TalkingData is seeking to leverage behavioral data from more than 70% of the 500 million mobile devices active daily in China to help its clients better understand and interact with their audiences.
+
+In this competition, Kagglers are challenged to build a model predicting users’ demographic characteristics based on their app usage, geolocation, and mobile device properties. Doing so will help millions of developers and brand advertisers around the world pursue data-driven marketing efforts which are relevant to their users and catered to their preferences.
+
+File descriptions
+-----------------------------------------------------
+
+gender_age_train.csv, gender_age_test.csv - the training and test set
+group: this is the target variable you are going to predict
+events.csv, app_events.csv - when a user uses TalkingData SDK, the event gets logged in this data. Each event has an event id, location (lat/long), and the event corresponds to a list of apps in app_events.
+timestamp: when the user is using an app with TalkingData SDK
+app_labels.csv - apps and their labels, the label_id's can be used to join with label_categories
+label_categories.csv - apps' labels and their categories in text
+phone_brand_device_model.csv - device ids, brand, and models
+![Database schema.](../Data/TalkingData.png)
+------------------------------------------
+
+###Loading the Packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T, message=F, warning=F, fig.width=9.5, fig.height=4)
+library(RColorBrewer)
+library(data.table)
+library(FeatureHashing)
+library(Matrix)
+library(xgboost)
+library(dplyr)
+library(slam)
+library(ggplot2)
+library(maps)
+library(ggmap)
+library(readr)
+library(plotly)
+```
+
+
+###Reading and merging the data  
+###functions to read and manipulate data
+```{r}
+#functions to read  data
+ReadData  = function(x) fread(x,colClasses = "character",integer64=getOption("datatable.integer64"))
+```
+###to string function concatenates different application's id's , event id's by user into a single record based on the primary key device id(user device id)
+```{r}
+#function to convert data to strings
+toStr  = function(x) paste(x, collapse = ",")
+```
+
+###binarySum function is used to calculate the number of application activation's and deactivations in each user account.
+```{r}
+#function to calculate number off activations and deactivations of events, binary sums
+binarySum= function(x) sum(as.integer(x))
+```
+
+###Reading the Data
+```{r}
+#Reading the data
+app_events = ReadData("../Data/app_events.csv/app_events.csv")
+#Reading the app label data
+app_labels= ReadData("../Data/app_labels.csv/app_labels.csv")
+#reading the label_categories data
+label_category= ReadData("../Data/label_categories.csv/label_categories.csv")
+```
+###Mergning data based on the label_id and app_id from app_labels and app_events from the data base
+```{r}
+#merging label categories with label id
+app_labels <- merge(label_category, app_labels, by = "label_id", all.x = T)
+#merging app lables with app data
+app_labels <- app_labels[,.(labelCategory=toStr(category)),by=app_id]
+#merging app_labels with app_events
+app_events <- merge(app_events, app_labels, by = "app_id", all.x = T)
+```
+ 
+##App Events Exploration
+###aggregating the app_events with number of installation and activations of application
+
+calculating number of app installations, app active categories with respect to event_id
+
+using tostr() and binarysum() funcitons to get the data to a single record per event level
+```{r}
+head(app_events)
+app_events = app_events[ , .(apps = toStr(app_id),appCategory=toStr(labelCategory),isInstalled=binarySum(is_installed),
+                             isActive=binarySum(is_active)), by = event_id]
+#looking at the application events data using glimpse function
+glimpse(app_events)
+```
+###Reading the events data and merging it with app usage data
+```{r}
+events <- ReadData("../Data/events.csv/events.csv")
+events <- merge(events, app_events, by = "event_id", all.x = T)
+```
+
+###Analysis with respect to time of application usage
+
+```{r}
+#taking hour from the time stamp to do analysis
+events$eventTime=as.integer(format(as.POSIXct(events$timestamp, format="%Y-%m-%d %H:%M"), format="%H"))
+#taking month from the time stamp to do analysis
+events$eventDay=as.integer(format(as.POSIXct(events$timestamp, format="%Y-%m-%d %H:%M"), format="%d"))
+#taking both hour directly without summing it 
+#events$eventTime=format(as.POSIXct(events$timestamp, format="%Y-%m-%d %H:%M"), format="%H")
+```
+### I am going to take mode( most used time of  applications by the user) EventsTimes for the specific device,to check if there is any trend.
+```{r}
+events <- events[ , .(apps = toStr(apps),appCategory=toStr(appCategory),
+isInstalled=sum(isInstalled,na.rm=T),isActive=sum(isActive,na.rm = T)
+,deviceTime=mode(eventTime),deviceDay=round(mean(eventDay),0)), by = device_id]
+rm(app_events)
+```
+##Events data Analysis
+###There are a total of 60865 devices data captured with respect to application installations
+
+```{r}
+glimpse(events)
+plot_ly(events,x=~isInstalled,y=~isActive,mode="markers",type="scatter")%>%
+  layout(title="Number of application installed vs application that are active")
+```
+### Merge bag-of-apps and brand data into train and test users 
+
+```{r}
+users_train <- ReadData("../Data/gender_age_train.csv/gender_age_train.csv")
+users_test  <- ReadData("../Data/gender_age_test.csv/gender_age_test.csv")
+brands      <- ReadData("../Data/phone_brand_device_model.csv/phone_brand_device_model.csv")
+```
+
+###removing duplicates from phone brands
+```{r}
+brands      <- brands[!duplicated(brands$device_id), ]
+
+MergeTalk <- function(x, y) merge(x, y, by = "device_id", all.x = T)
+users_train <- MergeTalk(users_train, events)
+users_train <- MergeTalk(users_train, brands)
+users_test  <- MergeTalk(users_test, events)
+users_test  <- MergeTalk(users_test, brands)
+```
+##feature engineering isInstalled and isActive
+###Handling NA's , and I am assuming users with NA's in isInstalled and isActive as the users who are not using any applications or services or calling them as Not available.I will make this column as a factor isActive
+NA=Not available
+users_train$isActive<100 as starters
+users_train$isActive>100 & users_train$isActive<500 as moderate users users_train$isActive>500 & users_train$isActive<5000 as High users users_train$isActive>5000 as very high users
+```{r}
+isActiveCategory=function(users)ifelse(is.na(users$isActive)==T,"Not available",
+           ifelse(users$isActive<=100,"Starters",
+          ifelse(users$isActive>100 & users$isActive<=500,"Moderate",
+          ifelse(users$isActive>500 & users$isActive<=5000,"High","Very High"
+                               ))))
+```
+##isInstalled
+###as the number of applications installed on a cellphone varies vastly , I am assuming a different condition for the isInstalled variable as well. They are not available users, starters, moderate, high and very high applicaiton use's based on the condition
+```{r}
+isInstalledCategory=function(users)ifelse(is.na(users$isInstalled)==T,"Not available",
+                                       ifelse(users$isInstalled<=50,"Starters Applications",
+                                              ifelse(users$isInstalled>50 & users$isInstalled<=100,"Moderate Applications",
+                                                     ifelse(users$isInstalled>100 & users$isInstalled<=500,"High Applications","Very High Applications"
+                                                     ))))
+```
+
+
+##isDayTime
+
+###as the number of applications installed on a cellphone varies vastly , I am assuming a different condition for the isInstalled variable.feature engineering deviceTime to isDayTime
+```{r}
+isDayTime=function(users)ifelse(is.na(users$deviceTime)==T,"Not available",
+                                          ifelse(users$deviceTime>=2 & users$deviceTime<=8,"Early Morning",
+                                                 ifelse(users$deviceTime>8 & users$deviceTime<=12,"Morning",
+                                                        ifelse(users$deviceTime>12 & users$deviceTime<=20,"Evening"
+                                                               ,ifelse(users$deviceTime>20 & users$deviceTime<=24,"Night","Mid Night"
+                                                        )))))
+```
+
+
+###converting the feature engineered columns to factors
+```{r}
+#calling isActiveCategory function on users_train
+users_train$isActiveCategory=as.factor(isActiveCategory(users_train))
+#calling isActiveCategory on users_test
+users_test$isActiveCategory=as.factor(isActiveCategory(users_test))
+
+#calling isInstalledCategory function on users_train
+users_train$isInstalledCategory=as.factor(isInstalledCategory(users_train))
+#calling isInstalledCategory on users_test
+users_test$isInstalledCategory=as.factor(isInstalledCategory(users_test))
+
+#calling isDayTime function on users_train
+users_train$isDayTime=as.factor(isDayTime(users_train))
+#calling isDayTime on users_test
+users_test$isDayTime=as.factor(isDayTime(users_test))
+```
+
+##cleaning data
+###this is the final data preperation step, we can observe from below that for every device there are many applications installed, activated and deactived. Below are all the applications installed by the user with device id  -1001337759327042486, This data will be avaialable for all the users who have applications
+```{r results='asis'}
+knitr::kable(users_train$device_id[4])
+knitr::kable(users_train$appCategory[4])
+```
+
+## FeatureHash brand and app data to sparse matrix
+###I am going to build a matrix to decompose the appCategory string into a sparse matrix which has  columns with  application names, when a application is present I will say 1 for that user, or else I will treat him as 0, who is not using the application, Build a large sparse matrix of size of 74645 rows 32768 columns
+
+```{r}
+b <- 2 ^ 15
+f <- ~deviceDay+isDayTime+isInstalledCategory+isActiveCategory+ phone_brand + device_model + split(apps, delim = ",")+split(appCategory,delim=",")- 1
+X_train <- hashed.model.matrix(f, users_train, b)
+X_test  <- hashed.model.matrix(f, users_test,  b)
+#dimensions of the hashed sparse matrix
+dim(X_train)
+```
+
+###Below are the 12 age segements which we have to predict based on the demographics of the user
+
+```{r}
+unique(users_train$group)
+```
+
+###My best Submitted Model calculated from Validated xgboost model
+
+```{r}
+Y_key <- sort(unique(users_train$group))
+Y     <- match(users_train$group, Y_key) - 1
+```
+
+###preparing data for  validation
+
+```{r validation data splitting}
+model <- sample(1:length(Y), 50000)
+valid <- (1:length(Y))[-model]
+```
+
+###model tuning parameters and the model matrix are in the below code
+
+```{r parameter Tuning}
+param <- list(objective = "multi:softprob", num_class = 12,
+              booster = "gblinear", eta = 0.01,
+              eval_metric = "mlogloss",depth=8,lambda=0.5,lambda_bias=0.5,
+              alpha=0.5,
+              colsample_bytree=0.7,
+              num_parallel_tree=1)
+
+dmodel <- xgb.DMatrix(X_train[model,], label = Y[model])
+dvalid <- xgb.DMatrix(X_train[valid,], label = Y[valid])
+watch  <- list(model = dmodel, valid = dvalid)
+```
+
+###Runinng the model with cross validation by above tuning parameters
+
+```{r cross validation}
+m1 <- xgb.train(data = dmodel, param, nrounds = 130,
+                watchlist = watch)
+```
+
+###Final model building with the best cross validated model
+
+```{r model building with the best cross validated model}
+# Use all train data and predict test
+dtrain <- xgb.DMatrix(X_train, label = Y)
+dtest  <- xgb.DMatrix(X_test)
+
+m2 <- xgb.train(data = dtrain, param, nrounds = 150)
+
+out <- matrix(predict(m2, dtest), ncol = 12, byrow = T)
+out <- data.frame(device_id = users_test$device_id, out)
+names(out)[2:13] <- Y_key
+write.csv(out, file = "sub1.csv", row.names = F)
+```
+

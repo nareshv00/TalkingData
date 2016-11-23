@@ -1,0 +1,178 @@
+---
+title: "TalkingData EDA"
+author: "Naresh"
+date: "September 2, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T, message=F, warning=F, fig.width=9.5, fig.height=4)
+library(RColorBrewer)
+library(data.table)
+library(FeatureHashing)
+library(Matrix)
+library(xgboost)
+library(dplyr)
+library(slam)
+library(ggplot2)
+library(maps)
+library(ggmap)
+library(readr)
+library(plotly)
+```
+
+#Agenda
+
+Get to know millions of mobile device users
+
+
+Nothing is more comforting than being greeted by your favorite drink just as you walk through the door of the corner café. While a thoughtful barista knows you take a macchiato every Wednesday morning at 8:15, it’s much more difficult in a digital space for your preferred brands to personalize your experience.
+
+TalkingData, China’s largest third-party mobile data platform, understands that everyday choices and behaviors paint a picture of who we are and what we value. Currently, TalkingData is seeking to leverage behavioral data from more than 70% of the 500 million mobile devices active daily in China to help its clients better understand and interact with their audiences.
+
+In this competition, Kagglers are challenged to build a model predicting users’ demographic characteristics based on their app usage, geolocation, and mobile device properties. Doing so will help millions of developers and brand advertisers around the world pursue data-driven marketing efforts which are relevant to their users and catered to their preferences.
+
+File descriptions
+-----------------------------------------------------
+
+gender_age_train.csv, gender_age_test.csv - the training and test set
+group: this is the target variable you are going to predict
+events.csv, app_events.csv - when a user uses TalkingData SDK, the event gets logged in this data. Each event has an event id, location (lat/long), and the event corresponds to a list of apps in app_events.
+timestamp: when the user is using an app with TalkingData SDK
+app_labels.csv - apps and their labels, the label_id's can be used to join with label_categories
+label_categories.csv - apps' labels and their categories in text
+phone_brand_device_model.csv - device ids, brand, and models
+![Database schema.](../Data/TalkingData.png)
+------------------------------------------
+
+#Descriptive and Exploratory data analysis 
+loading users, phone brand and events data
+```{r}
+users_train <- read_csv("../Data/gender_age_train.csv/gender_age_train.csv")
+users_test  <- read_csv("../Data/gender_age_test.csv/gender_age_test.csv")
+brands      <- read_csv("../Data/phone_brand_device_model.csv/phone_brand_device_model2.csv")
+```
+
+Classification Categories in users and their proportions in the data are below stated
+```{r}
+unique(users_train$group)
+prop.table(table(users_train$group))
+```
+###making use of english names for the mobile brand names
+replacing chinese names using the english names derived from internet
+```{r}
+chinese.brands <- c("HTC","LG","OPPO","vivo","三星","中兴","乐视","努比亚","华为","小米","索尼","联想","酷派","金立","魅族")
+eng.brands <- c("HTC", "LG","OPPO","vivo","Samsung","ZTE","LeEco","Niube","Huawei","Xiaomi","Sony","Lenovo","Kupo","Gionne","Meizu")
+brands$phone_brand <- plyr::mapvalues(as.factor(brands$phone_brand), chinese.brands, eng.brands)
+```
+###removing duplicate device id's in brands data
+```{r}
+brands=brands[!duplicated(brands$device_id),]
+#Merging the phone brands with the 
+BrandCountsData=as.data.frame(sort(table(brands$phone_brand),decreasing = T))
+#assinging column names to Brand Counts data
+names(BrandCountsData)[1]=c('BrandName')
+#major mobile carriers in the industry
+MajorBrands=subset(BrandCountsData,BrandCountsData$BrandName>=1000)
+```
+###Top mobile brands in China
+
+We can clearly observe that xiaomi, Samsung and huawai are leading in the race in china
+```{r}
+
+BrandCountsBar=ggplot(data = MajorBrands)+aes(x=reorder(row.names(MajorBrands),-BrandName),y=BrandName,fill=BrandName)
+BrandCountsBar+geom_bar(stat="identity")+xlab('Brand Names')+ylab('Frequency of usage')+
+  ggtitle("Top 14 mobile brands in China")
+```
+##Merging Brands, events data with training and testing data
+```{r}
+MergeTalk <- function(x, y) merge(x, y, by = "device_id", all.x = T)
+users_train <- MergeTalk(users_train, brands)
+users_test  <- MergeTalk(users_test, brands)
+```
+##selecting the top 15 used brands among all the carriers
+```{r}
+topBrands <- names(sort(table(users_train$phone_brand), decreasing = T))[1:15]
+topBrandsSummary=users_train %>% 
+  group_by(gender, age, phone_brand) %>%
+  summarise(n=n()) %>%
+  filter(phone_brand %in% topBrands)
+topBrandsSummary$phone_brand=as.character(topBrandsSummary$phone_brand)
+```
+###User Age Distributions Grouped by Gender
+###click or toggle on the legned on the plot to swith between the segments
+
+Among all the brands huawai is attracting the most number of male customers.
+Male and female customers are evenly high in xiaomi. 
+However, we can observe that samsung is strong competitor for huawai and xiaomi.
+```{r}
+plot_ly(data = topBrandsSummary,y=~age,x=~phone_brand, type = "box",split = ~gender)%>%
+  layout(boxmode="group",title="User Age Distributions Grouped by Gender (Hover for breakdown)",
+         yaxis=list(title="number of users"))
+```
+
+###Users Across Top 15 Brands Grouped by Gender
+###click or toggle on the legned on the plot to swith between the segments
+
+Clearly xiaomi  is leading in the race with most number of users, next we have huawai, samsung, OPPO and Meizu in the competetion.
+I observed that there are more number of male users than female users in any of the top 15 brands.
+Number of male customers in xiaomi is almost double that of female customers
+However, number of customers for vivo is almost similar in male and female.
+```{r}
+topBrandsSummaryUsage=topBrandsSummary%>%group_by(phone_brand,gender)%>%summarise(n=sum(n))%>%
+  arrange(desc(n))
+plot_ly(data = topBrandsSummaryUsage,y=~n,x=~phone_brand, type = "bar",split = ~gender)%>%
+  layout(title="Users Across Top 15 Brands Grouped by Gender (Hover for breakdown)",
+         yaxis=list(title="number of users"))
+```
+
+###Top Mobile Carrier user distributions in China
+###click or toggle on the legned on the plot to swith between the segments
+
+Observed top  provider is  Xioami and mostly used by age groups between 10-32.
+However, for customers with age more than 32, huawai and samsung are leading.
+If we toggle on Xioami we can observe that samsung and Huawei is leading in all the age groups.
+VIVO are leading next within 20 to 60 age groups.
+```{r}
+plot_ly(data = topBrandsSummary,y=~n,x=~age,color=~phone_brand, type = "bar",
+        alpha = 1)%>%
+  layout(title="Top Mobile Carries in China (Hover for breakdown)",barmode="overlay",
+         yaxis=list(title="number of users"))
+```
+###Number of models offered by top 15 brands in china
+###We can clerly observe that number of models offered by samsung and Huawei are  higher than Xioami, However number of users are high for Xiaomi. This shows the popularity of Xioami in china( Called as Iphone of China).
+```{r}
+topBrands <- names(sort(table(users_train$phone_brand), decreasing = T))[1:15]
+modelsOffered <- users_train %>% 
+  filter(phone_brand %in% topBrands) %>%
+  group_by(phone_brand) %>%
+  summarise(totalUsers= n(), 
+            model = n_distinct(device_model))
+plot_ly(data = modelsOffered,y=~totalUsers,x=~model,mode="markers",type = "scatter",
+       marker = list(opacity = 0.5, sizemode = 'diameter'),colors = "Paired",size=~totalUsers,color=~phone_brand,hoverinfo='text',text = ~paste('Brand:',phone_brand , '<br> Models offered:', model,'<br> Number of users:', totalUsers))%>%
+  layout(title="Number of Models Offered vs Users in Top Brands  (Hover for breakdown)",xaxis=list(title="Number of Models Offered"),showlegend = FALSE)
+```
+
+###Number of Users in Each Segemnt for Top  Mobile Carriers
+###click or toggle on the legned on the plot to swith between the segments
+
+Observed that top 5 user categories in Xiaomi is male. highest number of the users in Xiaomi segements belong to Male 23 to 26 age groups.
+Where as highest segements for Huawei and samsung are the age groups Male 32-28 and Male 39 plus. It seems xiaomi is attracting most number of younger customers rather than any other brand.
+
+###distribution of response variable( age groups) in top mobile brands
+
+```{r}
+topBrands <- names(sort(table(users_train$phone_brand), decreasing = T))[1:15]
+topBrandsSummary=users_train %>% 
+  group_by(group, phone_brand) %>%
+  summarise(n=n()) %>%
+  filter(phone_brand %in% topBrands)
+topBrandsSummary$phone_brand=as.character(topBrandsSummary$phone_brand)
+###distribution of response variable( age groups) in top mobile brands
+plot_ly(data = topBrandsSummary,y=~n,x=~phone_brand,split=~group, type = "bar")%>%
+  layout(title="Number of Users in Each Segment (Hover for breakdown)",
+        yaxis=list(title="number of users"))
+```
+
+###End of Exploratory Data Analysis
+###PLease open the Data Cleaning and Modeling file
