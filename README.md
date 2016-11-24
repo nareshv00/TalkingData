@@ -15,4 +15,4 @@ In this competition, Kagglers are challenged to build a model predicting usersâ€
 
 
 #Report 2 -- Data Cleaning, Feature Engineering and Modeling
-[Data Visulization and Exploration](https://cdn.rawgit.com/nareshv00/Talkingdata/master/DataCleaningAndModeling%23Report2.html)
+[Data Cleaning, Feature Engineering and Modeling](https://cdn.rawgit.com/nareshv00/Talkingdata/master/DataCleaningAndModeling%23Report2.html)
